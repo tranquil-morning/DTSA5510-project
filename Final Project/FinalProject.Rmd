@@ -1,0 +1,189 @@
+---
+title: "South Park Text Anlysis"
+author: "Jinwook Chang"
+date: '2022-04-16'
+output: 
+  html_document: 
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(reticulate)
+
+```
+
+This project may have contains *explicit language*.
+
+South Park is a 25-year-old TV show that has aired since 1997
+I don't think it's as popular as before.
+Many fans of the show say that the vitriol has become less so interesting of show is less than before
+I want to analyze this opinion is right, on this project.
+
+## Load Libraries
+
+```{r}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidymodels)
+library(tidytext)
+library(sweary) # devtools::install_github("pdrhlik/sweary")
+```
+
+## Load datasets
+
+```{r}
+
+sp_lines <- read_csv("sp_lines.csv")
+sp_ratings <- read_csv("sp_ratings.csv")
+
+tail(sp_lines)
+tail(sp_ratings)
+```
+
+## Calculate Sentiment & Figure out swear words
+
+```{r}
+en_swear_words <- sweary::get_swearwords("en") %>%
+    mutate(stem = SnowballC::wordStem(word))
+
+afinn  <- read_csv("afinn.csv")
+
+
+sp <- inner_join(sp_lines, sp_ratings)
+
+sp_words <- sp %>%
+    unnest_tokens(word, text) %>%
+    anti_join(stop_words) %>%
+    left_join(afinn) %>%
+    mutate(word_stem = SnowballC::wordStem(word),
+        swear_word = word %in% en_swear_words$word | word_stem %in% en_swear_words$stem)
+
+# View the last six observations
+tail(sp_words)
+```
+
+## Summarize data by episode
+
+```{r}
+by_episode <- sp_words %>%
+    group_by(episode_name, rating, episode_order) %>%
+    summarize(
+        swear_word_ratio = sum(swear_word) / n(),
+        sentiment_score = mean(value, na.rm = TRUE)
+    ) %>%
+    arrange(episode_order)
+
+
+tail(by_episode)
+
+# What is the naughtiest episode?
+( naughtiest <- by_episode[which.max(by_episode$swear_word_ratio), ] )
+```
+
+Below is the explantion for this episode on wikipedia : 
+You can check how naughy is this episode :p
+
+
+"It Hits the Fan" is the fifth season premiere of the American animated television series South Park, and the 67th episode of the series overall. It is also the 2nd episode of Season 5 when going by production order. It first aired on Comedy Central in the United States on June 20, 2001. In the episode, after the word "shit" is said uncensored on the network television crime show Cop Drama, everyone starts saying the word repeatedly. This eventually brings on a mysterious plague that unleashes the ancient Knights of Standards and Practices, and only Chef and the boys can save the world.
+
+The episode was written by series co-creator Trey Parker and is rated TV-MA in the United States. Throughout the episode, the profanity "shit" or "shitty" are exclaimed uncensored a total of 162 separate times; in syndicated or re-aired versions of this episode, a counter in the bottom left corner of the screen counts the number of times the word has been uttered. The written occurrences are not counted, but "shit" is written 38 times, which brings the count up to an even 200. On a statistical average, the word "shit" is uttered roughly once for every eight seconds of showtime; one such count includes the episode's theme song in the calculation.
+
+
+## Overall Sentiment
+
+```{r}
+theme_set(theme_minimal())
+
+# Plot sentiment score for each episode
+ggplot(by_episode, aes(episode_order, sentiment_score)) +
+    geom_col() +
+    geom_smooth()
+```
+
+## Overall Popularity
+
+```{r}
+ggplot(by_episode, aes(episode_order, rating)) +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = 100, col = "red", lty = "dashed")
+```
+
+
+## More Naughty, More popular?
+
+```{r}
+ggplot(by_episode, aes(rating, swear_word_ratio)) +
+    geom_point(alpha = 0.6, size = 3) +
+    geom_smooth() +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(breaks = seq(6, 10, 0.5)) +
+    labs(
+        x = "IMDB rating",
+        y = "Episode swear word ratio"
+)
+```
+
+
+
+## Cluster Charcters by words
+
+```{r}
+characters <- c("butters", "cartman", "kenny", "kyle", "stan")
+
+sp_lines <- sp_lines %>% filter(character %in% characters) %>% select(1, 2)
+
+```
+
+```{python}
+import numpy as np
+import pandas as pd
+from sklearn.decomposition import NMF
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+vect = TfidfVectorizer(min_df=50, stop_words='english')
+X = vect.fit_transform(r.sp_lines.text)
+
+model = NMF(n_components=5, random_state=46)
+model.fit(X)
+nmf_features = model.transform(X)
+
+```
+
+```{python}
+components_df = pd.DataFrame(model.components_, columns=vect.get_feature_names())
+
+for topic in range(components_df.shape[0]):
+    tmp = components_df.iloc[topic]
+    print(f'For character {topic+1} the words with the highest value are:')
+    print(tmp.nlargest(10))
+    print('\n')
+```
+
+
+```{python}
+pred_class = pd.DataFrame({'id' : [0, 1, 2, 3, 4], 'category' : ['1', '2', '3', '4', '5']})
+
+train_pred = pd.DataFrame({'id':pd.DataFrame(nmf_features).idxmax(axis=1)})
+train_pred.merge(pred_class, how = 'left', on = 'id').category
+
+
+pred_result = train_pred.merge(pred_class, how = 'left', on = 'id').category.to_csv("pred_result.csv")
+```
+
+```{r}
+pred_result <- read_csv("pred_result.csv")
+
+sp_lines <- sp_lines %>% mutate(pred_result = pred_result$category)
+
+
+table(sp_lines$character, sp_lines$pred_result)
+```
+
+
+I'm quite sure character 3 is Eric :p  
+because 3rd topics has word like `dude, fuck, hell`  
+but it seems Stan uses more those words than Eric.
+
